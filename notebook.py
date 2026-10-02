@@ -368,6 +368,8 @@ def _(API_HASH, API_ID, BOT_TOKEN):
         logging.info(f"🎬 شروع: {input_path}")
         if update_callback:
             update_callback("🔍 استخراج صوت و حذف سکوت (VAD)...", 10, "در حال استخراج...")
+
+        # FFmpeg
         _ff = subprocess.run([
             "ffmpeg", "-i", input_path, "-ac", "1", "-ar", "16000", "-vn",
             "-threads", str(FFMPEG_THREADS), wav_path, "-y"
@@ -375,6 +377,7 @@ def _(API_HASH, API_ID, BOT_TOKEN):
         if _ff.returncode != 0:
             raise RuntimeError(f"FFmpeg: {_ff.stderr[-200:]}")
 
+        # Duration
         _dp = subprocess.run([
             "ffprobe", "-v", "error", "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1", wav_path
@@ -385,12 +388,14 @@ def _(API_HASH, API_ID, BOT_TOKEN):
             total_duration = 0.0
         logging.info(f"⏱️ مدت: {total_duration:.1f}s")
 
+        # VAD
         logging.info("🔍 FireRedVAD...")
         _vad_res, _ = _vad_model.detect(wav_path)
         _segments = _vad_res.get("timestamps", [])
         _speech = sum(e - s for s, e in _segments) if _segments else 0
         logging.info(f"📢 {len(_segments)} بخش گفتار | {_speech:.1f}s")
 
+        # Chunk + VAD filter
         if update_callback:
             update_callback("✂️ قطعه‌بندی گفتار و آماده‌سازی...", 20, "در حال تفکیک...")
 
@@ -411,6 +416,7 @@ def _(API_HASH, API_ID, BOT_TOKEN):
                 chunk_files.append((i, start, cp))
         logging.info(f"📦 {len(chunk_files)} تکه دارای گفتار (از {num_chunks})")
 
+        # ASR (batch)
         _asr_results = []
         total_batches = math.ceil(len(chunk_files) / BATCH_SIZE)
         batch_times = []
@@ -460,6 +466,7 @@ def _(API_HASH, API_ID, BOT_TOKEN):
             if (bi + 1) % CLEANUP_INTERVAL == 0 and torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
+        # ForcedAligner
         logging.info(f"🎯 ForcedAligner روی {len(_asr_results)} بخش...")
         _all_entries = []
         total_align = len(_asr_results)
@@ -502,12 +509,12 @@ def _(API_HASH, API_ID, BOT_TOKEN):
         if update_callback:
             update_callback("📝 ذخیره و تولید فایل زیرنویس...", 98, "چند لحظه...")
 
+        # SRT
         _all_entries.sort(key=lambda x: x[0])
         srt_entries = []
         for idx, (_s, _e, _t) in enumerate(_all_entries, 1):
-            _clean_t = re.sub(r'[​‎﻿­�]', '', _t).strip()
-            if _clean_t:
-                srt_entries.append(f"{idx}\n{seconds_to_srt_time(_s)} --> {seconds_to_srt_time(_e)}\n{_clean_t}\n")
+            if _t.strip():
+                srt_entries.append(f"{idx}\n{seconds_to_srt_time(_s)} --> {seconds_to_srt_time(_e)}\n{_t}\n")
 
         srt_path = f"{WORK_DIR}/output/{filename_base}.srt"
         with open(srt_path, "w", encoding="utf-8") as f:
@@ -523,8 +530,10 @@ def _(API_HASH, API_ID, BOT_TOKEN):
 
         return srt_path, _total_inf, total_duration
 
+    #  ۹-B. فایل خودکار ورکر ترجمه موازی (Batch=8 + توکن‌شمار)
+    # ══════════════════════════════════════════════
     WORKER_SCRIPT = f"{WORK_DIR}/translate_worker.py"
-    _worker_b64 = "IyB0cmFuc2xhdGVfd29ya2VyLnB5CmltcG9ydCBzeXMsIG9zLCByZSwganNvbiwgdGltZQppbXBvcnQgdG9yY2gKaW1wb3J0IHB5c3J0CmZyb20gdHJhbnNmb3JtZXJzIGltcG9ydCBBdXRvTW9kZWxGb3JJbWFnZVRleHRUb1RleHQsIEF1dG9Ub2tlbml6ZXIsIEJpdHNBbmRCeXRlc0NvbmZpZwoKU1lTVEVNX1BST01QVF9GQSA9ICIiItiq2Ygg24zaqSDZhdiq2LHYrNmFINit2LHZgdmH4oCM2KfbjCDYstuM2LHZhtmI24zYsyDZh9iz2KrbjC4g2YXYqtmGINiy24zYsdmG2YjbjNizINix2Kcg2KjZhyDZgdin2LHYs9uMINix2YjYp9mG2Iwg2LfYqNuM2LnbjCDZiCDZhdit2KfZiNix2YfigIzYp9uMINiq2LHYrNmF2Ycg2qnZhi4K2YLZiNin2YbbjNmGOgotINmB2YLYtyDYqtix2KzZhdmHINix2Kcg2KjYsdqv2LHYr9in2YbYjCDZh9uM2oYg2KrZiNi224zYrSDYp9i22KfZgdmH4oCM2KfbjCDZhtmG2YjbjNizCi0g2KrYsdiq24zYqCDYrNmF2YTYp9iqINmIINiz2KfYrtiq2KfYsSDYsdinINit2YHYuCDaqdmGCi0g2YfYsSDYrti3INiq2LHYrNmF2Ycg2LHYpyDYqNinINi02YXYp9ix2YcgWzFdLCBbMl0sIC4uLiDYtNix2YjYuSDaqdmGCi0g2KfYtdi32YTYp9it2KfYqtiMINmG2KfZheKAjNmH2Kcg2Ygg2KfYudiv2KfYryDYsdinINiv2YLbjNmCINmG2q/ZhyDYr9in2LEKLSDYp9qv2LEg2YXYqtmGINqp2YjYqtin2Ycg2KfYs9iq2Iwg2qnZiNiq2KfZhyDYqtix2KzZhdmHINqp2YYKLSDYrtix2YjYrNuMINmB2YLYtyDZhdiq2YYg2KrYsdis2YXZh+KAjNi02K/ZhyDYqNinINi02YXYp9ix2Ycg2K7Yt9mI2Lcg2KjYp9i02K8iIiIKCmRlZiBtYWluKCk6CiAgICBpZiBsZW4oc3lzLmFyZ3YpIDwgMjoKICAgICAgICBzeXMuZXhpdCgxKQogICAgICAgIAogICAgc3J0X3BhdGggPSBzeXMuYXJndlsxXQogICAgYmF0Y2hfc2l6ZSA9IGludChzeXMuYXJndlsyXSkgaWYgbGVuKHN5cy5hcmd2KSA+IDIgZWxzZSAzMgogICAgcGFyYWxsZWxfc2l6ZSA9IGludChzeXMuYXJndlszXSkgaWYgbGVuKHN5cy5hcmd2KSA+IDMgZWxzZSA4CiAgICBvdXRwdXRfcGF0aCA9IHNydF9wYXRoLnJlcGxhY2UoIi5zcnQiLCAiX2ZhLnNydCIpCiAgICAKICAgIHByaW50KCJTVEFUVVM6bG9hZGluZ19tb2RlbCIsIGZsdXNoPVRydWUpCiAgICBtb2RlbF9pZCA9ICJRd2VuL1F3ZW4zLjYtMzVCLUEzQiIKICAgIGJuYl9jb25maWcgPSBCaXRzQW5kQnl0ZXNDb25maWcoCiAgICAgICAgbG9hZF9pbl80Yml0PVRydWUsCiAgICAgICAgYm5iXzRiaXRfcXVhbnRfdHlwZT0ibmY0IiwKICAgICAgICBibmJfNGJpdF91c2VfZG91YmxlX3F1YW50PVRydWUsCiAgICAgICAgYm5iXzRiaXRfY29tcHV0ZV9kdHlwZT10b3JjaC5iZmxvYXQxNiwKICAgICkKICAgIHRvayA9IEF1dG9Ub2tlbml6ZXIuZnJvbV9wcmV0cmFpbmVkKG1vZGVsX2lkLCB0cnVzdF9yZW1vdGVfY29kZT1UcnVlKQogICAgdG9rLnBhZGRpbmdfc2lkZSA9ICJsZWZ0IgogICAgaWYgdG9rLnBhZF90b2tlbiBpcyBOb25lOgogICAgICAgIHRvay5wYWRfdG9rZW4gPSB0b2suZW9zX3Rva2VuCgogICAgbW9kZWwgPSBBdXRvTW9kZWxGb3JJbWFnZVRleHRUb1RleHQuZnJvbV9wcmV0cmFpbmVkKAogICAgICAgIG1vZGVsX2lkLAogICAgICAgIHF1YW50aXphdGlvbl9jb25maWc9Ym5iX2NvbmZpZywKICAgICAgICBkZXZpY2VfbWFwPSJjdWRhOjAiLAogICAgICAgIHRydXN0X3JlbW90ZV9jb2RlPVRydWUsCiAgICAgICAgdG9yY2hfZHR5cGU9dG9yY2guYmZsb2F0MTYsCiAgICApCiAgICBtb2RlbC5ldmFsKCkKICAgIAogICAgcHJpbnQoIlNUQVRVUzp0cmFuc2xhdGluZyIsIGZsdXNoPVRydWUpCiAgICBzdWJzID0gcHlzcnQub3BlbihzcnRfcGF0aCwgZW5jb2Rpbmc9InV0Zi04IikKICAgIGNodW5rcywgY3VyID0gW10sIFtdCiAgICBmb3IgaSwgc3ViIGluIGVudW1lcmF0ZShzdWJzKToKICAgICAgICBjdXIuYXBwZW5kKHsiaW5kZXgiOiBpLCAic3RhcnQiOiBzdWIuc3RhcnQsICJlbmQiOiBzdWIuZW5kLCAidGV4dCI6IHN1Yi50ZXh0LnN0cmlwKCl9KQogICAgICAgIGlmIGxlbihjdXIpID49IGJhdGNoX3NpemU6CiAgICAgICAgICAgIGNodW5rcy5hcHBlbmQoY3VyKQogICAgICAgICAgICBjdXIgPSBbXQogICAgaWYgY3VyOgogICAgICAgIGNodW5rcy5hcHBlbmQoY3VyKQoKICAgIHRvdGFsX2NodW5rcyA9IGxlbihjaHVua3MpCiAgICB0cmFuc2xhdGVkX2NodW5rcyA9IFtdCiAgICB0b3RhbF90b2tlbnMgPSAwCiAgICAKICAgIGZvciBwX2lkeCBpbiByYW5nZSgwLCB0b3RhbF9jaHVua3MsIHBhcmFsbGVsX3NpemUpOgogICAgICAgIGJhdGNoX2NodW5rcyA9IGNodW5rc1twX2lkeDpwX2lkeCArIHBhcmFsbGVsX3NpemVdCiAgICAgICAgcHJvbXB0cyA9IFtdCiAgICAgICAgZm9yIGNodW5rIGluIGJhdGNoX2NodW5rczoKICAgICAgICAgICAgdGV4dHNfd2l0aF9udW1iZXJzID0gW2YiW3tpdGVtWydpbmRleCddKzF9XSB7aXRlbVsndGV4dCddfSIgZm9yIGl0ZW0gaW4gY2h1bmtdCiAgICAgICAgICAgIGZ1bGxfdGV4dCA9ICJcbiIuam9pbih0ZXh0c193aXRoX251bWJlcnMpCiAgICAgICAgICAgIG1lc3NhZ2VzID0gWwogICAgICAgICAgICAgICAgeyJyb2xlIjogInN5c3RlbSIsICJjb250ZW50IjogU1lTVEVNX1BST01QVF9GQX0sCiAgICAgICAgICAgICAgICB7InJvbGUiOiAidXNlciIsICJjb250ZW50IjogZiLYp9uM2YYg2YXYqtmGINiy24zYsdmG2YjbjNizINix2Kcg2KjZhyDZgdin2LHYs9uMINiq2LHYrNmF2Ycg2qnZhjpcblxue2Z1bGxfdGV4dH0ifQogICAgICAgICAgICBdCiAgICAgICAgICAgIHAgPSB0b2suYXBwbHlfY2hhdF90ZW1wbGF0ZSgKICAgICAgICAgICAgICAgIG1lc3NhZ2VzLAogICAgICAgICAgICAgICAgdG9rZW5pemU9RmFsc2UsCiAgICAgICAgICAgICAgICBhZGRfZ2VuZXJhdGlvbl9wcm9tcHQ9VHJ1ZSwKICAgICAgICAgICAgICAgIGVuYWJsZV90aGlua2luZz1GYWxzZQogICAgICAgICAgICApCiAgICAgICAgICAgIHByb21wdHMuYXBwZW5kKHApCiAgICAgICAgICAgIAogICAgICAgIGlucHV0cyA9IHRvayhwcm9tcHRzLCBwYWRkaW5nPVRydWUsIHJldHVybl90ZW5zb3JzPSJwdCIpLnRvKG1vZGVsLmRldmljZSkKICAgICAgICBpbl9sZW4gPSBpbnB1dHNbImlucHV0X2lkcyJdLnNoYXBlWzFdCiAgICAgICAgCiAgICAgICAgYmF0Y2hfaW5fdG9rZW5zID0gaW5wdXRzWyJpbnB1dF9pZHMiXS5udW1lbCgpCiAgICAgICAgdG9yY2hfZHR5cGU9dG9yY2guYmZsb2F0MTYsCiAgICApCiAgICBtb2RlbC5ldmFsKCkKICAgIAogICAgcHJpbnQoIlNUQVRVUzp0cmFuc2xhdGluZyIsIGZsdXNoPVRydWUpCiAgICBzdWJzID0gcHlzcnQub3BlbihzcnRfcGF0aCwgZW5jb2Rpbmc9InV0Zi04IikKICAgIGNodW5rcywgY3VyID0gW10sIFtdCiAgICBmb3IgaSwgc3ViIGluIGVudW1lcmF0ZShzdWJzKToKICAgICAgICBjdXIuYXBwZW5kKHsiaW5kZXgiOiBpLCAic3RhcnQiOiBzdWIuc3RhcnQsICJlbmQiOiBzdWIuZW5kLCAidGV4dCI6IHN1Yi50ZXh0LnN0cmlwKCl9KQogICAgICAgIGlmIGxlbihjdXIpID49IGJhdGNoX3NpemU6CiAgICAgICAgICAgIGNodW5rcy5hcHBlbmQoY3VyKQogICAgICAgICAgICBjdXIgPSBbXQogICAgaWYgY3VyOgogICAgICAgIGNodW5rcy5hcHBlbmQoY3VyKQoKICAgIHRvdGFsX2NodW5rcyA9IGxlbihjaHVua3MpCiAgICB0cmFuc2xhdGVkX2NodW5rcyA9IFtdCiAgICB0b3RhbF90b2tlbnMgPSAwCiAgICAKICAgIGZvciBwX2lkeCBpbiByYW5nZSgwLCB0b3RhbF9jaHVua3MsIHBhcmFsbGVsX3NpemUpOgogICAgICAgIGJhdGNoX2NodW5rcyA9IGNodW5rc1twX2lkeDpwX2lkeCArIHBhcmFsbGVsX3NpemVdCiAgICAgICAgcHJvbXB0cyA9IFtdCiAgICAgICAgZm9yIGNodW5rIGluIGJhdGNoX2NodW5rczoKICAgICAgICAgICAgdGV4dHNfd2l0aF9udW1iZXJzID0gW2YiW3tpdGVtWydpbmRleCddKzF9XSB7aXRlbVsndGV4dCddfSIgZm9yIGl0ZW0gaW4gY2h1bmtdCiAgICAgICAgICAgIGZ1bGxfdGV4dCA9ICJcbiIuam9pbih0ZXh0c193aXRoX251bWJlcnMpCiAgICAgICAgICAgIG1lc3NhZ2VzID0gWwogICAgICAgICAgICAgICAgeyJyb2xlIjogInN5c3RlbSIsICJjb250ZW50IjogU1lTVEVNX1BST01QVF9GQX0sCiAgICAgICAgICAgICAgICB7InJvbGUiOiAidXNlciIsICJjb250ZW50IjogZiLYp9uM2YYg2YXYqtmGINiy24zYsdmG2YjbjNizINix2Kcg2KjZhyDZgdin2LHYs9uMINiq2LHYrNmF2Ycg2qnZhjpcblxue2Z1bGxfdGV4dH0ifQogICAgICAgICAgICBdCiAgICAgICAgICAgIHAgPSB0b2suYXBwbHlfY2hhdF90ZW1wbGF0ZSgKICAgICAgICAgICAgICAgIG1lc3NhZ2VzLAogICAgICAgICAgICAgICAgdG9rZW5pemU9RmFsc2UsCiAgICAgICAgICAgICAgICBhZGRfZ2VuZXJhdGlvbl9wcm9tcHQ9VHJ1ZSwKICAgICAgICAgICAgICAgIGVuYWJsZV90aGlua2luZz1GYWxzZQogICAgICAgICAgICApCiAgICAgICAgICAgIHByb21wdHMuYXBwZW5kKHApCiAgICAgICAgICAgIAogICAgICAgIGlucHV0cyA9IHRvayhwcm9tcHRzLCBwYWRkaW5nPVRydWUsIHJldHVybl90ZW5zb3JzPSJwdCIpLnRvKG1vZGVsLmRldmljZSkKICAgICAgICBpbl9sZW4gPSBpbnB1dHNbImlucHV0X2lkcyJdLnNoYXBlWzFdCiAgICAgICAgCiAgICAgICAgYmF0Y2hfaW5fdG9rZW5zID0gaW5wdXRzWyJpbnB1dF9pZHMiXS5udW1lbCgpCiAgICAgICAgdG90YWxfdG9rZW5zICs9IGJhdGNoX2luX3Rva2VucwogICAgICAgIAogICAgICAgIHdpdGggdG9yY2gubm9fZ3JhZCgpOgogICAgICAgICAgICBvdXRwdXRzID0gbW9kZWwuZ2VuZXJhdGUoCiAgICAgICAgICAgICAgICAqKmlucHV0cywKICAgICAgICAgICAgICAgIG1heF9uZXdfdG9rZW5zPTIwNDgsCiAgICAgICAgICAgICAgICB0ZW1wZXJhdHVyZT0wLjMsCiAgICAgICAgICAgICAgICB0b3BfcD0wLjksCiAgICAgICAgICAgICAgICBkb19zYW1wbGU9VHJ1ZSwKICAgICAgICAgICAgICAgIHBhZF90b2tlbl9pZD10b2sucGFkX3Rva2VuX2lkLAogICAgICAgICAgICApCiAgICAgICAgICAgIAogICAgICAgIGZvciBpIGluIHJhbmdlKGxlbihwcm9tcHRzKSk6CiAgICAgICAgICAgIG91dF90b2tzID0gKG91dHB1dHNbaV1baW5fbGVuOl0gIT0gdG9rLnBhZF90b2tlbl9pZCkuc3VtKCkuaXRlbSgpCiAgICAgICAgICAgIHRvdGFsX3Rva2VucyArPSBvdXRfdG9rcwogICAgICAgICAgICAKICAgICAgICAgICAgcmVzcCA9IHRvay5kZWNvZGUob3V0cHV0c1tpXVtpbl9sZW46XSwgc2tpcF9zcGVjaWFsX3Rva2Vucz1UcnVlKQogICAgICAgICAgICByZXNwID0gcmUuc3ViKHIiPHRoaW5rPi4qPzwvdGhpbms+IiwgIiIsIHJlc3AsIGZsYWdzPXJlLkRPVEFMTCkuc3RyaXAoKQogICAgICAgICAgICB0cmFuc2xhdGVkX2NodW5rcy5hcHBlbmQocmVzcCkKICAgICAgICAgICAgCiAgICAgICAgZG9uZV9jaHVua3MgPSBtaW4ocF9pZHggKyBwYXJhbGxlbF9zaXplLCB0b3RhbF9jaHVua3MpCiAgICAgICAgdnJhbV91c2VkID0gdG9yY2guY3VkYS5tZW1vcnlfYWxsb2NhdGVkKCkgLyAoMTAyNCoqMykKICAgICAgICB2cmFtX3RvdGFsID0gdG9yY2guY3VkYS5nZXRfZGV2aWNlX3Byb3BlcnRpZXMoMCkudG90YWxfbWVtb3J5IC8gKDEwMjQqKjMpCiAgICAgICAgcHJpbnQoZiJQUk9HUkVTUzp7ZG9uZV9jaHVua3N9L3t0b3RhbF9jaHVua3N9Ont2cmFtX3VzZWQ6LjFmfS97dnJhbV90b3RhbDouMWZ9Ont0b3RhbF90b2tlbnN9IiwgZmx1c2g9VHJ1ZSkKCiAgICBhbGxfdHJhbnNsYXRlZF9saW5lcyA9IFtdCiAgICBmb3IgdHJhbnNsYXRlZCBpbiB0cmFuc2xhdGVkX2NodW5rczoKICAgICAgICBsaW5lcyA9IFtsaW5lLnN0cmlwKCkgZm9yIGxpbmUgaW4gdHJhbnNsYXRlZC5zcGxpdCgiXG4iKSBpZiBsaW5lLnN0cmlwKCldCiAgICAgICAgY2xlYW5fbGluZXMgPSBbcmUuc3ViKHInW+KAi+KAju+7v8Kt77+9XScsICcnLCBsaW5lKS5zdHJpcCgpIGZvciBsaW5lIGluIGxpbmVzXQogICAgICAgIGNsZWFuX2xpbmVzID0gW3JlLnN1YihyIl5cW1xkK1xdXHMqIiwgIiIsIGxpbmUpIGZvciBsaW5lIGluIGNsZWFuX2xpbmVzXQogICAgICAgIGNsZWFuX2xpbmVzID0gW2Yi4oCPe2xpbmV9IiBpZiBub3QgbGluZS5zdGFydHN3aXRoKCLigI8iKSBlbHNlIGxpbmUgZm9yIGxpbmUgaW4gY2xlYW5fbGluZXNdCiAgICAgICAgYWxsX3RyYW5zbGF0ZWRfbGluZXMuZXh0ZW5kKGNsZWFuX2xpbmVzKQoKICAgIGlmIGxlbihhbGxfdHJhbnNsYXRlZF9saW5lcykgIT0gbGVuKHN1YnMpOgogICAgICAgIGFsbF90cmFuc2xhdGVkX2xpbmVzID0gYWxsX3RyYW5zbGF0ZWRfbGluZXNbOmxlbihzdWJzKV0KICAgICAgICB3aGlsZSBsZW4oYWxsX3RyYW5zbGF0ZWRfbGluZXMpIDwgbGVuKHN1YnMpOgogICAgICAgICAgICBhbGxfdHJhbnNsYXRlZF9saW5lcy5hcHBlbmQoc3Vic1tsZW4oYWxsX3RyYW5zbGF0ZWRfbGluZXMpXS50ZXh0KQoKICAgIG5ld19zdWJzID0gcHlzcnQuU3ViUmlwRmlsZSgpCiAgICBmb3IgaSwgc3ViIGluIGVudW1lcmF0ZShzdWJzKToKICAgICAgICBuZXdfc3ViID0gcHlzcnQuU3ViUmlwSXRlbSgKICAgICAgICAgICAgaW5kZXg9aSArIDEsCiAgICAgICAgICAgIHN0YXJ0PXN1Yi5zdGFydCwKICAgICAgICAgICAgZW5kPXN1Yi5lbmQsCiAgICAgICAgICAgIHRleHQ9YWxsX3RyYW5zbGF0ZWRfbGluZXNbaV0KICAgICAgICApCiAgICAgICAgbmV3X3N1YnMuYXBwZW5kKG5ld19zdWIpCgogICAgbmV3X3N1YnMuc2F2ZShvdXRwdXRfcGF0aCwgZW5jb2Rpbmc9InV0Zi04IikKICAgIHByaW50KGYiRE9ORTp7b3V0cHV0X3BhdGh9OntsZW4oc3Vicyl9Ont0b3RhbF90b2tlbnN9IiwgZmx1c2g9VHJ1ZSkKCmlmIF9fbmFtZV9fID09ICJfX21haW5fXyI6CiAgICBtYWluKCkK"
+    _worker_b64 = "IyB0cmFuc2xhdGVfd29ya2VyLnB5CmltcG9ydCBzeXMsIG9zLCByZSwganNvbiwgdGltZQppbXBvcnQgdG9yY2gKaW1wb3J0IHB5c3J0CmZyb20gdHJhbnNmb3JtZXJzIGltcG9ydCBBdXRvTW9kZWxGb3JJbWFnZVRleHRUb1RleHQsIEF1dG9Ub2tlbml6ZXIsIEJpdHNBbmRCeXRlc0NvbmZpZwoKU1lTVEVNX1BST01QVF9GQSA9ICIiItiq2Ygg24zaqSDZhdiq2LHYrNmFINit2LHZgdmH4oCM2KfbjCDYstuM2LHZhtmI24zYsyDZh9iz2KrbjC4g2YXYqtmGINiy24zYsdmG2YjbjNizINix2Kcg2KjZhyDZgdin2LHYs9uMINix2YjYp9mG2Iwg2LfYqNuM2LnbjCDZiCDZhdit2KfZiNix2YfigIzYp9uMINiq2LHYrNmF2Ycg2qnZhi4K2YLZiNin2YbbjNmGOgotINmB2YLYtyDYqtix2KzZhdmHINix2Kcg2KjYsdqv2LHYr9in2YbYjCDZh9uM2oYg2KrZiNi224zYrSDYp9i22KfZgdmH4oCM2KfbjCDZhtmG2YjbjNizCi0g2KrYsdiq24zYqCDYrNmF2YTYp9iqINmIINiz2KfYrtiq2KfYsSDYsdinINit2YHYuCDaqdmGCi0g2YfYsSDYrti3INiq2LHYrNmF2Ycg2LHYpyDYqNinINi02YXYp9ix2YcgWzFdLCBbMl0sIC4uLiDYtNix2YjYuSDaqdmGCi0g2KfYtdi32YTYp9it2KfYqtiMINmG2KfZheKAjNmH2Kcg2Ygg2KfYudiv2KfYryDYsdinINiv2YLbjNmCINmG2q/ZhyDYr9in2LEKLSDYp9qv2LEg2YXYqtmGINqp2YjYqtin2Ycg2KfYs9iq2Iwg2qnZiNiq2KfZhyDYqtix2KzZhdmHINqp2YYKLSDYrtix2YjYrNuMINmB2YLYtyDZhdiq2YYg2KrYsdis2YXZh+KAjNi02K/ZhyDYqNinINi02YXYp9ix2Ycg2K7Yt9mI2Lcg2KjYp9i02K8iIiIKCmRlZiBtYWluKCk6CiAgICBpZiBsZW4oc3lzLmFyZ3YpIDwgMjoKICAgICAgICBzeXMuZXhpdCgxKQogICAgICAgIAogICAgc3J0X3BhdGggPSBzeXMuYXJndlsxXQogICAgYmF0Y2hfc2l6ZSA9IGludChzeXMuYXJndlsyXSkgaWYgbGVuKHN5cy5hcmd2KSA+IDIgZWxzZSAzMgogICAgcGFyYWxsZWxfc2l6ZSA9IGludChzeXMuYXJndlszXSkgaWYgbGVuKHN5cy5hcmd2KSA+IDMgZWxzZSA4CiAgICBvdXRwdXRfcGF0aCA9IHNydF9wYXRoLnJlcGxhY2UoIi5zcnQiLCAiX2ZhLnNydCIpCiAgICAKICAgIHByaW50KCJTVEFUVVM6bG9hZGluZ19tb2RlbCIsIGZsdXNoPVRydWUpCiAgICBtb2RlbF9pZCA9ICJRd2VuL1F3ZW4zLjYtMzVCLUEzQiIKICAgIGJuYl9jb25maWcgPSBCaXRzQW5kQnl0ZXNDb25maWcoCiAgICAgICAgbG9hZF9pbl80Yml0PVRydWUsCiAgICAgICAgYm5iXzRiaXRfcXVhbnRfdHlwZT0ibmY0IiwKICAgICAgICBibmJfNGJpdF91c2VfZG91YmxlX3F1YW50PVRydWUsCiAgICAgICAgYm5iXzRiaXRfY29tcHV0ZV9kdHlwZT10b3JjaC5iZmxvYXQxNiwKICAgICkKICAgIHRvayA9IEF1dG9Ub2tlbml6ZXIuZnJvbV9wcmV0cmFpbmVkKG1vZGVsX2lkLCB0cnVzdF9yZW1vdGVfY29kZT1UcnVlKQogICAgdG9rLnBhZGRpbmdfc2lkZSA9ICJsZWZ0IgogICAgaWYgdG9rLnBhZF90b2tlbiBpcyBOb25lOgogICAgICAgIHRvay5wYWRfdG9rZW4gPSB0b2suZW9zX3Rva2VuCgogICAgbW9kZWwgPSBBdXRvTW9kZWxGb3JJbWFnZVRleHRUb1RleHQuZnJvbV9wcmV0cmFpbmVkKAogICAgICAgIG1vZGVsX2lkLAogICAgICAgIHF1YW50aXphdGlvbl9jb25maWc9Ym5iX2NvbmZpZywKICAgICAgICBkZXZpY2VfbWFwPSJjdWRhOjAiLAogICAgICAgIHRydXN0X3JlbW90ZV9jb2RlPVRydWUsCiAgICAgICAgdG9yY2hfZHR5cGU9dG9yY2guYmZsb2F0MTYsCiAgICApCiAgICBtb2RlbC5ldmFsKCkKICAgIAogICAgcHJpbnQoIlNUQVRVUzp0cmFuc2xhdGluZyIsIGZsdXNoPVRydWUpCiAgICBzdWJzID0gcHlzcnQub3BlbihzcnRfcGF0aCwgZW5jb2Rpbmc9InV0Zi04IikKICAgIGNodW5rcywgY3VyID0gW10sIFtdCiAgICBmb3IgaSwgc3ViIGluIGVudW1lcmF0ZShzdWJzKToKICAgICAgICBjdXIuYXBwZW5kKHsiaW5kZXgiOiBpLCAic3RhcnQiOiBzdWIuc3RhcnQsICJlbmQiOiBzdWIuZW5kLCAidGV4dCI6IHN1Yi50ZXh0LnN0cmlwKCl9KQogICAgICAgIGlmIGxlbihjdXIpID49IGJhdGNoX3NpemU6CiAgICAgICAgICAgIGNodW5rcy5hcHBlbmQoY3VyKQogICAgICAgICAgICBjdXIgPSBbXQogICAgaWYgY3VyOgogICAgICAgIGNodW5rcy5hcHBlbmQoY3VyKQoKICAgIHRvdGFsX2NodW5rcyA9IGxlbihjaHVua3MpCiAgICB0cmFuc2xhdGVkX2NodW5rcyA9IFtdCiAgICB0b3RhbF90b2tlbnMgPSAwCiAgICAKICAgIGZvciBwX2lkeCBpbiByYW5nZSgwLCB0b3RhbF9jaHVua3MsIHBhcmFsbGVsX3NpemUpOgogICAgICAgIGJhdGNoX2NodW5rcyA9IGNodW5rc1twX2lkeDpwX2lkeCArIHBhcmFsbGVsX3NpemVdCiAgICAgICAgcHJvbXB0cyA9IFtdCiAgICAgICAgZm9yIGNodW5rIGluIGJhdGNoX2NodW5rczoKICAgICAgICAgICAgdGV4dHNfd2l0aF9udW1iZXJzID0gW2YiW3tpdGVtWydpbmRleCddKzF9XSB7aXRlbVsndGV4dCddfSIgZm9yIGl0ZW0gaW4gY2h1bmtdCiAgICAgICAgICAgIGZ1bGxfdGV4dCA9ICJcbiIuam9pbih0ZXh0c193aXRoX251bWJlcnMpCiAgICAgICAgICAgIG1lc3NhZ2VzID0gWwogICAgICAgICAgICAgICAgeyJyb2xlIjogInN5c3RlbSIsICJjb250ZW50IjogU1lTVEVNX1BST01QVF9GQX0sCiAgICAgICAgICAgICAgICB7InJvbGUiOiAidXNlciIsICJjb250ZW50IjogZiLYp9uM2YYg2YXYqtmGINiy24zYsdmG2YjbjNizINix2Kcg2KjZhyDZgdin2LHYs9uMINiq2LHYrNmF2Ycg2qnZhjpcblxue2Z1bGxfdGV4dH0ifQogICAgICAgICAgICBdCiAgICAgICAgICAgIHAgPSB0b2suYXBwbHlfY2hhdF90ZW1wbGF0ZSgKICAgICAgICAgICAgICAgIG1lc3NhZ2VzLAogICAgICAgICAgICAgICAgdG9rZW5pemU9RmFsc2UsCiAgICAgICAgICAgICAgICBhZGRfZ2VuZXJhdGlvbl9wcm9tcHQ9VHJ1ZSwKICAgICAgICAgICAgICAgIGVuYWJsZV90aGlua2luZz1GYWxzZQogICAgICAgICAgICApCiAgICAgICAgICAgIHByb21wdHMuYXBwZW5kKHApCiAgICAgICAgICAgIAogICAgICAgIGlucHV0cyA9IHRvayhwcm9tcHRzLCBwYWRkaW5nPVRydWUsIHJldHVybl90ZW5zb3JzPSJwdCIpLnRvKG1vZGVsLmRldmljZSkKICAgICAgICBpbl9sZW4gPSBpbnB1dHNbImlucHV0X2lkcyJdLnNoYXBlWzFdCiAgICAgICAgCiAgICAgICAgYmF0Y2hfaW5fdG9rZW5zID0gaW5wdXRzWyJpbnB1dF9pZHMiXS5udW1lbCgpCiAgICAgICAgdG90YWxfdG9rZW5zICs9IGJhdGNoX2luX3Rva2VucwogICAgICAgIAogICAgICAgIHdpdGggdG9yY2gubm9fZ3JhZCgpOgogICAgICAgICAgICBvdXRwdXRzID0gbW9kZWwuZ2VuZXJhdGUoCiAgICAgICAgICAgICAgICAqKmlucHV0cywKICAgICAgICAgICAgICAgIG1heF9uZXdfdG9rZW5zPTIwNDgsCiAgICAgICAgICAgICAgICB0ZW1wZXJhdHVyZT0wLjMsCiAgICAgICAgICAgICAgICB0b3BfcD0wLjksCiAgICAgICAgICAgICAgICBkb19zYW1wbGU9VHJ1ZSwKICAgICAgICAgICAgICAgIHBhZF90b2tlbl9pZD10b2sucGFkX3Rva2VuX2lkLAogICAgICAgICAgICApCiAgICAgICAgICAgIAogICAgICAgIGZvciBpIGluIHJhbmdlKGxlbihwcm9tcHRzKSk6CiAgICAgICAgICAgIG91dF90b2tzID0gKG91dHB1dHNbaV1baW5fbGVuOl0gIT0gdG9rLnBhZF90b2tlbl9pZCkuc3VtKCkuaXRlbSgpCiAgICAgICAgICAgIHRvdGFsX3Rva2VucyArPSBvdXRfdG9rcwogICAgICAgICAgICAKICAgICAgICAgICAgcmVzcCA9IHRvay5kZWNvZGUob3V0cHV0c1tpXVtpbl9sZW46XSwgc2tpcF9zcGVjaWFsX3Rva2Vucz1UcnVlKQogICAgICAgICAgICByZXNwID0gcmUuc3ViKHIiPHRoaW5rPi4qPzwvdGhpbms+IiwgIiIsIHJlc3AsIGZsYWdzPXJlLkRPVEFMTCkuc3RyaXAoKQogICAgICAgICAgICB0cmFuc2xhdGVkX2NodW5rcy5hcHBlbmQocmVzcCkKICAgICAgICAgICAgCiAgICAgICAgZG9uZV9jaHVua3MgPSBtaW4ocF9pZHggKyBwYXJhbGxlbF9zaXplLCB0b3RhbF9jaHVua3MpCiAgICAgICAgdnJhbV91c2VkID0gdG9yY2guY3VkYS5tZW1vcnlfYWxsb2NhdGVkKCkgLyAoMTAyNCoqMykKICAgICAgICB2cmFtX3RvdGFsID0gdG9yY2guY3VkYS5nZXRfZGV2aWNlX3Byb3BlcnRpZXMoMCkudG90YWxfbWVtb3J5IC8gKDEwMjQqKjMpCiAgICAgICAgcHJpbnQoZiJQUk9HUkVTUzp7ZG9uZV9jaHVua3N9L3t0b3RhbF9jaHVua3N9Ont2cmFtX3VzZWQ6LjFmfS97dnJhbV90b3RhbDouMWZ9Ont0b3RhbF90b2tlbnN9IiwgZmx1c2g9VHJ1ZSkKCiAgICBhbGxfdHJhbnNsYXRlZF9saW5lcyA9IFtdCiAgICBmb3IgdHJhbnNsYXRlZCBpbiB0cmFuc2xhdGVkX2NodW5rczoKICAgICAgICBsaW5lcyA9IFtsaW5lLnN0cmlwKCkgZm9yIGxpbmUgaW4gdHJhbnNsYXRlZC5zcGxpdCgiXG4iKSBpZiBsaW5lLnN0cmlwKCldCiAgICAgICAgY2xlYW5fbGluZXMgPSBbcmUuc3ViKHInW+KAi+KAju+7v8Kt77+9XScsICcnLCBsaW5lKS5zdHJpcCgpIGZvciBsaW5lIGluIGxpbmVzXQogICAgICAgIGNsZWFuX2xpbmVzID0gW3JlLnN1YihyIl5cW1xkK1xdXHMqIiwgIiIsIGxpbmUpIGZvciBsaW5lIGluIGNsZWFuX2xpbmVzXQogICAgICAgIGNsZWFuX2xpbmVzID0gW2Yi4oCPe2xpbmV9IiBpZiBub3QgbGluZS5zdGFydHN3aXRoKCLigI8iKSBlbHNlIGxpbmUgZm9yIGxpbmUgaW4gY2xlYW5fbGluZXNdCiAgICAgICAgYWxsX3RyYW5zbGF0ZWRfbGluZXMuZXh0ZW5kKGNsZWFuX2xpbmVzKQoKICAgIGlmIGxlbihhbGxfdHJhbnNsYXRlZF9saW5lcykgIT0gbGVuKHN1YnMpOgogICAgICAgIGFsbF90cmFuc2xhdGVkX2xpbmVzID0gYWxsX3RyYW5zbGF0ZWRfbGluZXNbOmxlbihzdWJzKV0KICAgICAgICB3aGlsZSBsZW4oYWxsX3RyYW5zbGF0ZWRfbGluZXMpIDwgbGVuKHN1YnMpOgogICAgICAgICAgICBhbGxfdHJhbnNsYXRlZF9saW5lcy5hcHBlbmQoc3Vic1tsZW4oYWxsX3RyYW5zbGF0ZWRfbGluZXMpXS50ZXh0KQoKICAgIG5ld19zdWJzID0gcHlzcnQuU3ViUmlwRmlsZSgpCiAgICBmb3IgaSwgc3ViIGluIGVudW1lcmF0ZShzdWJzKToKICAgICAgICBuZXdfc3ViID0gcHlzcnQuU3ViUmlwSXRlbSgKICAgICAgICAgICAgaW5kZXg9aSArIDEsCiAgICAgICAgICAgIHN0YXJ0PXN1Yi5zdGFydCwKICAgICAgICAgICAgZW5kPXN1Yi5lbmQsCiAgICAgICAgICAgIHRleHQ9YWxsX3RyYW5zbGF0ZWRfbGluZXNbaV0KICAgICAgICApCiAgICAgICAgbmV3X3N1YnMuYXBwZW5kKG5ld19zdWIpCgogICAgbmV3X3N1YnMuc2F2ZShvdXRwdXRfcGF0aCwgZW5jb2Rpbmc9InV0Zi04IikKICAgIHByaW50KGYiRE9ORTp7b3V0cHV0X3BhdGh9OntsZW4oc3Vicyl9Ont0b3RhbF90b2tlbnN9IiwgZmx1c2g9VHJ1ZSkKCmlmIF9fbmFtZV9fID09ICJfX21haW5fXyI6CiAgICBtYWluKCkK"
     import base64
     with open(WORKER_SCRIPT, "wb") as _f_worker:
         _f_worker.write(base64.b64decode(_worker_b64))
@@ -551,6 +560,7 @@ def _(API_HASH, API_ID, BOT_TOKEN):
         gpu_temp = "نامشخص"
         gpu_pwr = "نامشخص"
         if torch.cuda.is_available():
+            # دریافت مستقیم کل حافظه واقعی مصرفی از درایور انویدیا (شامل پروسه اصلی و ورکر ترجمه)
             try:
                 smi = subprocess.run([
                     "nvidia-smi",
@@ -632,7 +642,7 @@ def _(API_HASH, API_ID, BOT_TOKEN):
         help_text = (
             "ℹ️ <b>راهنمای جامع ربات زیرنویس و ترجمه هوشمند</b>\n\n"
             "🎬 <b>مراحل کار:</b>\n"
-            "۱. یک ویدیو، صوت یا داکیومنت ویدیویی (دانلود تا سقف ۴ گیگابایت و آپلود تا ۲ گیگابایت) ارسال کنید.\n"
+            "۱. یک ویدیو، صوت یا داکیومنت ویدیویی (تا سقف ۲ گیگابایت) ارسال کنید.\n"
             "۲. ربات با استفاده از هوش مصنوعی سه‌مرحله‌ای (VAD + ASR + ForcedAligner) زیرنویس با هماهنگی دقیق کلمه به کلمه تولید می‌کند.\n"
             "۳. پس از دریافت زیرنویس، با کلیک روی <b>«🌐 ترجمه به فارسی»</b>، مدل قدرتمند Qwen3.6-35B زیرنویس را با دقت بالا ترجمه می‌کند.\n"
             "۴. با زدن دکمه <b>«🎬 هاردساب»</b>، زیرنویس مستقیماً روی ویدیو رندر و فایل نهایی برایتان ارسال می‌شود.\n\n"
@@ -722,6 +732,7 @@ def _(API_HASH, API_ID, BOT_TOKEN):
                 is_temp = True
                 logging.info(f"⬇️ دانلود: {os.path.getsize(input_path)/(1024*1024):.1f} MB")
 
+            # ذخیره یا دریافت تامبنیل اصلی ویدیوی تلگرام در صورت وجود
             thumb_path = f"{WORK_DIR}/output/{base_name}.thumb.jpg"
             orig_thumb = getattr(media, "thumbnail", None)
             if orig_thumb:
@@ -769,6 +780,7 @@ def _(API_HASH, API_ID, BOT_TOKEN):
             speed_ratio = total_duration / max(transcribe_inf, 0.1) if total_duration > 0 else 1.0
             dur_min = total_duration / 60.0
 
+            # ذخیره متادیتا برای استفاده در ترجمه و هاردساب
             meta_path = f"{WORK_DIR}/output/{base_name}.meta.json"
             try:
                 with open(meta_path, "w", encoding="utf-8") as _mf:
@@ -782,6 +794,7 @@ def _(API_HASH, API_ID, BOT_TOKEN):
             except Exception as _me:
                 logging.warning(f"Meta save: {_me}")
 
+            # ارسال SRT اصلی همراه با هر دو دکمه ترجمه و هاردساب
             kb_buttons = [
                 [InlineKeyboardButton("🌐 ترجمه به فارسی", callback_data=f"translate_{base_name}")],
                 [InlineKeyboardButton("🎬 هاردساب زیرنویس اصلی به ویدیو", callback_data=f"hardsub_orig_{base_name}")]
@@ -874,12 +887,12 @@ def _(API_HASH, API_ID, BOT_TOKEN):
                         if now - last_upd[0] >= 3.0 or cur == tot:
                             last_upd[0] = now
                             pct = int((cur / max(tot, 1)) * 100)
-            
+        
                             elapsed_gen = now - (start_gen_time[0] or tr_start_time)
                             avg_t = elapsed_gen / max(cur, 1)
                             rem_t = (tot - cur) * avg_t
                             t_str = f"~{rem_t:.0f} ثانیه" if cur > 0 and rem_t > 0 else "در حال تخمین..."
-            
+        
                             vram_txt = f"\n💾 حافظه گرافیک (VRAM): <b>{vram_info} گیگابایت</b>" if vram_info else ""
                             tok_txt = f"\n🔤 توکن‌های فعلی: <b>{toks:,}</b>" if toks > 0 else ""
 
@@ -904,7 +917,7 @@ def _(API_HASH, API_ID, BOT_TOKEN):
                         if len(parts) >= 4:
                             final_stats["lines"] = int(parts[2])
                             final_stats["tokens"] = int(parts[3])
-            
+        
                 p.wait()
                 if p.returncode != 0:
                     err = p.stderr.read()
@@ -915,6 +928,7 @@ def _(API_HASH, API_ID, BOT_TOKEN):
             translate_time = time.time() - tr_start_time
             grand_total = stage1_total_time + translate_time if stage1_total_time > 0 else translate_time
 
+            # ذخیره زمان ترجمه در متادیتا برای محاسبه زمان کل ۳ مرحله
             if os.path.exists(meta_path):
                 try:
                     with open(meta_path, "r", encoding="utf-8") as _mf:
@@ -1013,6 +1027,7 @@ def _(API_HASH, API_ID, BOT_TOKEN):
             await query.message.reply_text("❌ ویدیوی منبع برای هاردساب یافت نشد.")
             return
 
+        # تشخیص مشخصات دقیق ویدیو: کدک، ابعاد و مدت زمان
         orig_codec = "h264"
         v_width = 1280
         v_height = 720
@@ -1072,6 +1087,7 @@ def _(API_HASH, API_ID, BOT_TOKEN):
         out_video = f"{WORK_DIR}/output/{base_name}_{'fa_' if is_fa else ''}hardsub.mp4"
         t0 = time.time()
 
+        # پاکسازی کاراکترهای مخرب و اصلاح چیدمان راست‌به‌چپ (RTL)
         clean_srt_path = f"{WORK_DIR}/temp/{base_name}_{'fa_' if is_fa else ''}clean_render.srt"
         try:
             with open(srt_path, "r", encoding="utf-8") as _in_f:
@@ -1152,6 +1168,7 @@ def _(API_HASH, API_ID, BOT_TOKEN):
             await status_msg.edit_text(f"❌ خطا در هاردساب:\n<code>{safe_err}</code>", parse_mode="HTML")
             return
 
+        # آماده‌سازی تامبنیل غیر سیاه و دقیق
         thumb_path = saved_thumb if (saved_thumb and os.path.exists(saved_thumb) and os.path.getsize(saved_thumb) > 0) else f"{WORK_DIR}/output/{base_name}.thumb.jpg"
         if not os.path.exists(thumb_path) or os.path.getsize(thumb_path) == 0:
             seek_sec = min(2.0, max(0.5, total_dur * 0.1)) if total_dur > 0 else 1.0
@@ -1211,7 +1228,7 @@ def _(API_HASH, API_ID, BOT_TOKEN):
         await status_msg.delete()
 
     async def kill_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("🛑 توقف ربات...")
+        await update.message.reply_text("‏🛑 توقف ربات...")
         _state = getattr(sys, "_qwen_bot_state", None)
         if _state and _state.get("stop_event"):
             _state["stop_event"].set()
@@ -1297,12 +1314,12 @@ def _(API_HASH, API_ID, BOT_TOKEN):
             return
 
         _bu = bot_info.username
-        print(" [1;32m" + "="*60 + " [0m")
-        print(" [1;32m🎉 ربات تقویت‌شده فعال شد! [0m")
-        print(f" [1;36m🤖 @{_bu} [0m")
-        print(f" [1;32m   https://t.me/{_bu} [0m")
-        print(" [1;36m✨ VAD + ASR + ForcedAligner + Translation [0m")
-        print(" [1;32m" + "="*60 + " [0m")
+        print("[1;32m" + "="*60 + "[0m")
+        print("[1;32m🎉 ربات تقویت‌شده فعال شد![0m")
+        print(f"[1;36m🤖 @{_bu}[0m")
+        print(f"[1;32m   https://t.me/{_bu}[0m")
+        print("[1;36m✨ VAD + ASR + ForcedAligner + Translation[0m")
+        print("[1;32m" + "="*60 + "[0m")
 
         await bot_app.start()
         await bot_app.updater.start_polling(drop_pending_updates=True)
